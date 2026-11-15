@@ -23,7 +23,9 @@ public final class MainActivity extends Activity {
  private static final int BG=Color.rgb(10,18,30), PANEL=Color.rgb(20,33,49), TEXT=Color.rgb(239,246,255), MUTED=Color.rgb(164,182,202), MINT=Color.rgb(109,228,196), BLUE=Color.rgb(130,182,255), GOLD=Color.rgb(255,205,126);
  private final Handler handler=new Handler(Looper.getMainLooper());
  private Metric ram,storage,battery;
- private TextView batteryDetails,uptime,updated,memoryNote,cellularDetails,simPermission;
+ private WatchShare watchShare;
+ private TextView watchLink;
+ private TextView batteryDetails,uptime,updated,memoryNote,cellularDetails,simPermission,satelliteStatus;
  private final Runnable refresh=new Runnable(){public void run(){updateStats();handler.postDelayed(this,2000);}};
  @Override public void onCreate(Bundle state){
   super.onCreate(state);
@@ -40,6 +42,17 @@ public final class MainActivity extends Activity {
   TextView title=text("Device Vitals",34,TEXT);title.setTypeface(Typeface.DEFAULT,Typeface.BOLD);add(page,title,8);
   add(page,text("A little clarity for your everyday device.",15,MUTED),6);
   updated=text("Live · refreshing every 2 seconds",12,MINT);add(page,updated,16);
+  watchShare = new WatchShare(this, () ->
+    ram.value.getText() + " RAM used\n"
+    + storage.value.getText() + " storage used\n"
+    + battery.value.getText() + " phone battery\n\n"
+    + cellularDetails.getText() + "\n\n" + satelliteStatus.getText());
+  watchLink = text("Connect Pixel Watch  ›", 15, MINT);
+  watchLink.setPadding(0, dp(12), 0, dp(12));
+  watchLink.setMinHeight(dp(48));
+  watchLink.setFocusable(true);
+  watchLink.setOnClickListener(v -> watchShare.chooseWatch());
+  add(page, watchLink, 8);
   GridLayout grid=new GridLayout(this);int columns=getResources().getConfiguration().screenWidthDp>=700?3:1;grid.setColumnCount(columns);add(page,grid,24);
   ram=new Metric("01  /  MEMORY","RAM in use",MINT);storage=new Metric("02  /  STORAGE","Internal storage used",BLUE);battery=new Metric("03  /  BATTERY","Battery remaining",GOLD);
   addLink(ram.box,"View memory use by app  ›",MINT,v->openMemoryReport());
@@ -66,6 +79,13 @@ public final class MainActivity extends Activity {
     Toast.makeText(this, "Open Network & Internet in Android Settings.", Toast.LENGTH_LONG).show();
    }
   });
+  LinearLayout satellite = panel();
+  add(page, satellite, 16);
+  satellite.addView(text("SATELLITE CONNECTIVITY", 11, BLUE));
+  satelliteStatus = text("", 15, TEXT);
+  add(satellite, satelliteStatus, 12);
+  add(satellite, text("Check Android Settings for satellite SOS and carrier messaging availability.", 13, MUTED), 8);
+  addLink(satellite, "Open satellite settings  ›", BLUE, v -> openSatelliteSettings());
   LinearLayout device=panel();add(page,device,16);device.addView(text("ABOUT THIS DEVICE",11,MUTED));TextView model=text(Build.MANUFACTURER+" "+Build.MODEL,22,TEXT);model.setTypeface(Typeface.DEFAULT,Typeface.BOLD);add(device,model,12);
   add(device,text("Android "+Build.VERSION.RELEASE+"  ·  API "+Build.VERSION.SDK_INT,15,MUTED),10);
   add(device,text("Security patch: "+(Build.VERSION.SECURITY_PATCH.isEmpty()?"Not reported":Build.VERSION.SECURITY_PATCH),14,MUTED),8);
@@ -77,7 +97,19 @@ public final class MainActivity extends Activity {
   TextView button=text("Refresh now",15,BG);button.setTypeface(Typeface.DEFAULT,Typeface.BOLD);button.setGravity(Gravity.CENTER);button.setPadding(dp(16),dp(16),dp(16),dp(16));button.setBackground(shape(MINT,14));button.setOnClickListener(v->{updateStats();button.announceForAccessibility("Device readings refreshed");});button.setFocusable(true);add(page,button,20);
  }
  @Override protected void onResume(){super.onResume();handler.removeCallbacks(refresh);handler.post(refresh);}
- @Override protected void onPause(){handler.removeCallbacks(refresh);super.onPause();}
+ @Override protected void onPause(){handler.removeCallbacks(refresh);watchShare.stop();super.onPause();}
+ @Override public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+  super.onRequestPermissionsResult(requestCode, permissions, results);
+  if (requestCode == WatchShare.PERMISSION_REQUEST && results.length > 0
+      && results[0] == PackageManager.PERMISSION_GRANTED) {
+   watchShare.chooseWatch();
+  }
+ }
+
+ void updateWatchLink(boolean sharing) {
+  watchLink.setText(sharing ? "Sharing with watch · Tap to stop" : "Connect Pixel Watch  ›");
+ }
+
  private void updateStats(){
   ActivityManager.MemoryInfo info=new ActivityManager.MemoryInfo();((ActivityManager)getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(info);long used=Math.max(0,info.totalMem-info.availMem);
   ram.set(percent(used,info.totalMem),bytes(used)+" / "+bytes(info.totalMem),bytes(info.availMem)+" available");
@@ -93,17 +125,26 @@ public final class MainActivity extends Activity {
    String temperature=temp==Integer.MIN_VALUE?"Temperature not reported":String.format(Locale.getDefault(),"%.1f °C / %.1f °F",temp/10.0,temp/10.0*1.8+32);
    String volts=voltage>0?String.format(Locale.getDefault(),"%.2f V",voltage/1000.0):"Voltage not reported";batteryDetails.setText(temperature+"  ·  "+volts+"\n"+health(power.getIntExtra(BatteryManager.EXTRA_HEALTH,BatteryManager.BATTERY_HEALTH_UNKNOWN)));
   }
-  updateCellular();
+  NetworkCapabilities activeNetwork = activeNetworkCapabilities();
+  updateCellular(internetTransport(activeNetwork));
+  if (Build.VERSION.SDK_INT < 35) {
+   satelliteStatus.setText("Satellite connection status is unavailable on this Android version.");
+  } else {
+   satelliteStatus.setText(isSatelliteTransport(activeNetwork)
+     ? "Android reports an active satellite data connection."
+     : "No satellite data connection reported for the current network.");
+  }
+  watchShare.refreshSnapshot();
   long minutes=SystemClock.elapsedRealtime()/60000;uptime.setText("Since restart: "+minutes/1440+"d "+minutes%1440/60+"h "+minutes%60+"m");updated.setText("LIVE  ·  Updated "+DateFormat.getTimeInstance(DateFormat.MEDIUM).format(new Date()));
  }
- private void updateCellular() {
+ private void updateCellular(String transport) {
   simPermission.setVisibility(View.GONE);
   TelephonyManager phone = getSystemService(TelephonyManager.class);
   if (phone == null || !getPackageManager().hasSystemFeature(PackageManager.FEATURE_TELEPHONY)) {
    cellularDetails.setText("This device has no cellular radio.");
    return;
   }
-  String internet = "Active connection: " + internetTransport();
+  String internet = "Active connection: " + transport;
   if (Settings.Global.getInt(getContentResolver(), Settings.Global.AIRPLANE_MODE_ON, 0) != 0) {
    cellularDetails.setText("Airplane mode is on.\n" + internet);
    return;
@@ -166,18 +207,46 @@ public final class MainActivity extends Activity {
     details.append("\nRadio technology: ").append(radioTechnology(phone.getDataNetworkType()));
    }
    details.append("\n").append(signalReading(phone, !network.isEmpty()));
+   if (Build.VERSION.SDK_INT >= 35) {
+    ServiceState service = phone.getServiceState();
+    if (service != null && service.isUsingNonTerrestrialNetwork()) {
+     details.append("\nSatellite service reported on this line");
+    }
+   }
   } catch (SecurityException | UnsupportedOperationException | IllegalStateException e) {
    details.append("\nSome cellular readings are unavailable.");
   }
   return details.toString();
  }
 
- private String internetTransport() {
+ private void openSatelliteSettings() {
+  try {
+   startActivity(new Intent(Settings.ACTION_SATELLITE_SETTING));
+  } catch (ActivityNotFoundException | SecurityException e) {
+   try {
+    startActivity(new Intent(Settings.ACTION_SETTINGS));
+    Toast.makeText(this, "Search Settings for Satellite or Satellite SOS.", Toast.LENGTH_LONG).show();
+   } catch (ActivityNotFoundException | SecurityException unavailable) {
+    Toast.makeText(this, "Android Settings is unavailable.", Toast.LENGTH_LONG).show();
+   }
+  }
+ }
+
+ private NetworkCapabilities activeNetworkCapabilities() {
   ConnectivityManager connectivity = getSystemService(ConnectivityManager.class);
-  NetworkCapabilities network = connectivity == null ? null
+  return connectivity == null ? null
     : connectivity.getNetworkCapabilities(connectivity.getActiveNetwork());
+ }
+
+ private boolean isSatelliteTransport(NetworkCapabilities network) {
+  return Build.VERSION.SDK_INT >= 35 && network != null
+    && network.hasTransport(NetworkCapabilities.TRANSPORT_SATELLITE);
+ }
+
+ private String internetTransport(NetworkCapabilities network) {
   if (network == null) return "No active network";
   if (network.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return "VPN";
+  if (isSatelliteTransport(network)) return "Satellite";
   if (network.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "Wi-Fi";
   if (network.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "Cellular";
   if (network.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return "Ethernet";

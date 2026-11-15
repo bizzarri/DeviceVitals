@@ -1,0 +1,15 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.mauri.devicevitals">
+ <uses-feature android:name="android.hardware.type.watch" android:required="true" />
+ <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+ <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+ <application android:label="Device Vitals" android:theme="@android:style/Theme.Material.NoActionBar"
+     android:icon="@drawable/ic_vitals" android:allowBackup="false">
+  <meta-data android:name="com.google.android.wearable.standalone" android:value="false" />
+  <activity android:name=".WatchActivity" android:exported="true">
+   <intent-filter>
+    <action android:name="android.intent.action.MAIN" />
+    <category android:name="android.intent.category.LAUNCHER" />
+   </intent-filter>
+  </activity>
+ </application>
+</manifest>
